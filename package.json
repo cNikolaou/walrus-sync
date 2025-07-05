@@ -19,6 +19,7 @@
     "@mysten/sui": "^1.35.0",
     "@mysten/walrus": "^0.2.1",
     "commander": "^14.0.0",
+    "dotenv": "^17.0.1",
     "fast-glob": "^3.3.3"
   }
 }
