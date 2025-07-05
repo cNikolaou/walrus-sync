@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import { Command } from 'commander';
-import { FileScanner } from './scanner';
 import * as path from 'path';
+
+import { FileScanner } from './scanner';
+import { WalrusUploader } from './uploader';
 
 const program = new Command();
 
@@ -9,12 +11,17 @@ program
   .name('walrus-sync')
   .description('Rsync-like tool for Walrus decentralized store')
   .version('0.0.1')
-  .argument('<src>', 'file or directory to sync')
+  .argument('<src>', 'File or directory to sync')
   .option(
     '--dry-run',
-    'show files that would be synced with Walrus without uploading them',
+    'Show files that would be synced with Walrus without uploading them',
     false,
   )
+  .requiredOption(
+    '--epochs <epochs>',
+    'The number of epochs to store the blob(s) for.',
+  )
+  .option('--deletable', 'Mark the blob as deletable', false)
   .action(async (src: string, options) => {
     const scanner = new FileScanner();
     if (!src || !(await scanner.pathExists(src))) {
@@ -44,6 +51,12 @@ program
       }
     } else {
       console.log('Storing in Walrus:');
+
+      const walrusUploader = new WalrusUploader('mainnet');
+
+      for (const fp of filesList) {
+        await walrusUploader.uploadFile(fp, options.epochs, options.deletable);
+      }
     }
   });
 
