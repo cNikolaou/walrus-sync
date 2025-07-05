@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Command } from 'commander';
 import { FileScanner } from './scanner';
 import * as path from 'path';

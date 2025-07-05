@@ -1,3 +1,4 @@
 # ignore build files
 node_modules/
 dist/
+.env
