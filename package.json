@@ -16,6 +16,8 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@mysten/sui": "^1.35.0",
+    "@mysten/walrus": "^0.2.1",
     "commander": "^14.0.0",
     "fast-glob": "^3.3.3"
   }
