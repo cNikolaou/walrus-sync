@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import * as fs from 'fs/promises';
+import { FileScanner } from './scanner';
 
 const program = new Command();
 
@@ -14,7 +14,8 @@ program
     false,
   )
   .action(async (src: string, options) => {
-    if (!src) {
+    const scanner = new FileScanner();
+    if (!src || !(await scanner.pathExists(src))) {
       console.log('Error: Please specify a source file or directory');
       console.log('\nUsage examples:');
       console.log('  walrus-sync my-folder --dry-run');
@@ -22,17 +23,12 @@ program
       process.exit(1);
     }
 
-    try {
-      await fs.access(src, fs.constants.F_OK);
+    const isDirectory = await scanner.isDirectory(src);
 
-      const stats = await fs.stat(src);
-      if (stats.isDirectory()) {
-        console.log(`Syncing files from directory: ${src}`);
-      } else {
-        console.log(`Syncing file: ${src}`);
-      }
-    } catch {
-      console.error('No such file or dir');
+    if (isDirectory) {
+      console.log(`Syncing files from directory: ${src}`);
+    } else {
+      console.log(`Syncing file: ${src}`);
     }
   });
 
