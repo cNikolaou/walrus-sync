@@ -53,10 +53,10 @@ program
       console.log('Storing in Walrus:');
 
       const walrusUploader = new WalrusUploader('mainnet');
-
-      for (const fp of filesList) {
-        await walrusUploader.uploadFile(fp, options.epochs, options.deletable);
-      }
+      walrusUploader.uploadFiles(filesList, {
+        epochs: options.epochs,
+        deletable: options.deletable,
+      });
     }
   });
 

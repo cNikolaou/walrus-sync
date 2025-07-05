@@ -6,6 +6,11 @@ import * as path from 'path';
 
 type NetworkOptions = 'mainnet' | 'testnet';
 
+type UploadOptions = {
+  epochs: number;
+  deletable: boolean | undefined;
+};
+
 export class WalrusUploader {
   private walrusClient: WalrusClient;
   private signer: Ed25519Keypair;
@@ -37,7 +42,9 @@ export class WalrusUploader {
     });
 
     console.log(
-      `Using wallet address: ${this.signer.getPublicKey().toSuiAddress()}`,
+      `> Uploading using wallet address: ${this.signer
+        .getPublicKey()
+        .toSuiAddress()}`,
     );
   }
 
@@ -57,12 +64,13 @@ export class WalrusUploader {
     return metadata.blobId;
   }
 
-  async uploadFile(filePath: string, epochs: number, deletable?: boolean) {
-    if (!epochs) {
+  async uploadFile(filePath: string, options: UploadOptions) {
+    if (!options.epochs) {
       throw new Error('Should specify the number for `epochs`');
     }
 
     try {
+      // TODO: should check the file exists before trying to read
       const fileContent = await fs.readFile(filePath);
       const fileName = path.basename(filePath);
       const blobId = await this.calculateBlobId(fileContent);
@@ -78,18 +86,20 @@ export class WalrusUploader {
 
       // Follow the default behavior of the walrus Rust CLI: blobs should not
       // be deletable, unless the user has specified that by the CLI args
-      deletable = deletable || false;
+      const deletable = options.deletable || false;
 
       console.log(
         `Uploading: ${path.basename(filePath)} (${
           fileContent.length
-        } bytes) for ${epochs} (deletable: ${deletable}) - BlobId: ${blobId}`,
+        } bytes) [epoch: ${
+          options.epochs
+        } epochs, deletable: ${deletable}] - BlobId: ${blobId}`,
       );
 
       const result = await this.walrusClient.writeBlob({
         blob: fileContent,
         deletable: deletable,
-        epochs: epochs,
+        epochs: options.epochs,
         signer: this.signer,
       });
 
@@ -97,6 +107,12 @@ export class WalrusUploader {
       console.log(result);
     } catch (error) {
       console.error(`Failed to upload: ${path.basename(filePath)}:`, error);
+    }
+  }
+
+  async uploadFiles(filePaths: string[], options: UploadOptions) {
+    for (const fp of filePaths) {
+      await this.uploadFile(fp, options);
     }
   }
 }
