@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { FileScanner } from './scanner';
+import * as path from 'path';
 
 const program = new Command();
 
@@ -23,12 +24,25 @@ program
       process.exit(1);
     }
 
-    const isDirectory = await scanner.isDirectory(src);
+    let filesList: string[] = [];
 
-    if (isDirectory) {
+    if (await scanner.isDirectory(src)) {
       console.log(`Syncing files from directory: ${src}`);
+      filesList = await scanner.getFilesList(src);
     } else {
       console.log(`Syncing file: ${src}`);
+      filesList = [path.resolve(src)];
+    }
+
+    if (options.dryRun) {
+      console.log(
+        'Dry-run operation; the follow file(s) will not be uploaded to Walrus',
+      );
+      for (const fp of filesList) {
+        console.log(`\t${fp}`);
+      }
+    } else {
+      console.log('Storing in Walrus:');
     }
   });
 
