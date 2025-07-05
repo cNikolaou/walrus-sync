@@ -16,6 +16,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "commander": "^14.0.0"
+    "commander": "^14.0.0",
+    "fast-glob": "^3.3.3"
   }
 }
