@@ -4,26 +4,8 @@ import { WalrusClient } from '@mysten/walrus';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-type UploadStage =
-  | 'encoding'
-  | 'registered'
-  | 'uploading'
-  | 'certifying'
-  | 'completed'
-  | 'failed';
-
-type UploadState = {
-  blobId: string;
-  filePath: string;
-  stage: UploadStage;
-  blobObjectId?: string;
-  createdAt: string;
-  updatedAt: string;
-  metadata?: any;
-  confirmations?: any[];
-  rootHash?: any;
-  sliversByNode?: any[];
-};
+import { StateManager, type UploadState } from './state';
+import { uint8ArrayToBase64 } from './utils';
 
 type NetworkOptions = 'mainnet' | 'testnet';
 
@@ -35,6 +17,7 @@ type UploadOptions = {
 export class WalrusUploader {
   private walrusClient: WalrusClient;
   private signer: Ed25519Keypair;
+  private stateManager: StateManager;
 
   constructor(network: NetworkOptions) {
     const privateKey = process.env.SUI_PRIVATE_KEY;
@@ -61,6 +44,8 @@ export class WalrusUploader {
       network: network,
       suiClient,
     });
+
+    this.stateManager = new StateManager();
 
     console.log(
       `> Uploading using wallet address: ${this.signer
@@ -104,23 +89,53 @@ export class WalrusUploader {
       const fileName = path.basename(filePath);
       const blobId = await this.calculateBlobId(fileContent);
 
-      // track the state of the current upload
-      let state = {
-        filePath: filePath,
-        blobId: blobId,
-        stage: 'encoding' as UploadStage,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      // load the tracked state for the current upload
+      let state = await this.stateManager.loadState(blobId);
 
-      const exists = await this.blobExists(blobId);
+      if (!state) {
+        const isCertified = await this.isBlobCertified(blobId);
 
-      // Avoid re-uploading a blob that exist on Walrus
-      if (exists) {
+        // The blob is uploaded and certified; skip
+        if (isCertified) {
+          console.log(
+            `Skipping: ${fileName} already uploaded with blob ID: ${blobId}`,
+          );
+          return;
+        }
+
+        // No state for current file stored locally and no file found on Walrus;
+        // initialize a new state before starting the upload.
+        state = {
+          filePath,
+          blobId,
+          stage: 'encoding',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
         console.log(
-          `Skipping: ${fileName} already uploaded with blob ID: ${blobId}`,
+          `Found existing state: stage=${state.stage}, objectId=${state.blobObjectId}`,
         );
-        return;
+
+        // If state shows completed check certification
+        if (state.stage === 'completed') {
+          // Avoid re-uploading a blob that exist on Walrus
+          const isCertified = await this.isBlobCertified(blobId);
+          if (isCertified) {
+            console.log(
+              `Upload already completed and certified for ${fileName}`,
+            );
+            await this.stateManager.removeState(blobId);
+            return;
+          } else {
+            console.log(
+              'State shows completed but blob not certified, restarting upload',
+            );
+            state.stage = 'encoding';
+          }
+        }
+
+        console.log('Resuming from stage:', state.stage);
       }
 
       // Follow the default behavior of the walrus Rust CLI: blobs should not
@@ -137,7 +152,8 @@ export class WalrusUploader {
         } epochs, deletable: ${deletable}] - BlobId: ${blobId}`,
       );
 
-      await this.stageEncoding(state, fileContent, options);
+      // execute the from the appropriate stage
+      await this.executeStage(state, fileContent, options);
 
       console.log(`Uploading: ${fileName} (${fileContent.length} bytes)`);
     } catch (error) {
@@ -151,6 +167,70 @@ export class WalrusUploader {
     }
   }
 
+  /**
+   * Execute the appropriate upload stage based on the provided `state`.
+   *
+   * @param state object that stores the state of a file's upload
+   * @param fileContent byte array of the file's content
+   * @param options upload options
+   * @returns
+   */
+  private async executeStage(
+    state: UploadState,
+    fileContent: Uint8Array,
+    options: UploadOptions,
+  ) {
+    try {
+      switch (state.stage) {
+        case 'encoding':
+          await this.stageEncoding(state, fileContent, options);
+          break;
+        case 'registered':
+          await this.stageUploading(state, fileContent, options);
+          break;
+        case 'uploading':
+          await this.stageCertifying(state, options);
+          break;
+        case 'certifying':
+          await this.stageCertifying(state, options);
+          break;
+        case 'completed':
+          console.log(
+            `Upload already completed for ${path.basename(state.filePath)}`,
+          );
+          return;
+        case 'failed':
+          console.log(
+            `Retrying failed upload for ${path.basename(state.filePath)}`,
+          );
+          await this.stageEncoding(state, fileContent, options);
+          break;
+      }
+    } catch (error) {
+      state.stage = 'failed';
+
+      let errorMessage: string;
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else if (error && typeof error === 'object') {
+        errorMessage = JSON.stringify(error);
+      } else {
+        errorMessage = 'An unknown error occurred';
+      }
+
+      state.error = errorMessage;
+      state.updatedAt = new Date().toISOString();
+
+      await this.stateManager.saveState(state);
+      throw error;
+    }
+  }
+
+  /**
+   * First upload stage: encode and create Sui object.
+   */
   private async stageEncoding(
     state: UploadState,
     fileContent: Uint8Array,
@@ -161,6 +241,7 @@ export class WalrusUploader {
     const encoded = await this.walrusClient.encodeBlob(fileContent);
     const { sliversByNode, metadata, rootHash } = encoded;
 
+    // create Sui object that tracks the Walrus blob
     const suiBlobObject =
       await this.walrusClient.executeRegisterBlobTransaction({
         signer: this.signer,
@@ -172,20 +253,30 @@ export class WalrusUploader {
         owner: this.signer.toSuiAddress(),
       });
 
-    // update state
+    // update the file's upload state
     state.metadata = metadata;
     state.blobObjectId = suiBlobObject.blob.id.id;
-    state.rootHash = rootHash;
+    state.rootHash = uint8ArrayToBase64(rootHash);
     state.sliversByNode = sliversByNode;
     state.stage = 'registered';
+
+    await this.stateManager.saveState(state);
 
     console.log(
       `Blob registered on Sui with object ID: ${suiBlobObject.blob.id.id}`,
     );
 
+    // move to next upload stage
     await this.stageUploading(state, fileContent, options);
   }
 
+  /**
+   * Second upload stage: upload the slivers to nodes.
+   *
+   * NOTE: Currently there are some errors to be investigated when the
+   * upload resumes from this stage. If those errors appear we start
+   * the upload from the previous stage.
+   */
   private async stageUploading(
     state: UploadState,
     fileContent: Uint8Array,
@@ -206,9 +297,7 @@ export class WalrusUploader {
         objectId: state.blobObjectId,
       });
 
-      state.confirmations = confirmations;
-      state.stage = 'uploading';
-
+      // Calculate the valid confirmations out of all the confirmations
       const validConfirmations = confirmations.filter((c) => c !== null);
 
       console.log(
@@ -220,15 +309,58 @@ export class WalrusUploader {
         throw new Error('No valid confirmations received from storage nodes');
       }
 
+      // Update state
+      state.confirmations = confirmations;
+      state.stage = 'uploading';
+
+      await this.stateManager.saveState(state);
+
       // Continue to certification
       await this.stageCertifying(state, options);
     } catch (error) {
       console.error('Upload to storage nodes failed:', error);
-      state.stage = 'failed';
-      throw error;
+
+      // Resuming an upload on stage 2 returns and error. Need to investigate
+      // further why that happens.
+      console.log(
+        'Stage 2 failed, restarting from encoding (will delete Sui object and create new one)',
+      );
+
+      // cleanup
+      if (state.blobObjectId) {
+        try {
+          console.log('Cleaning up failed blob object:', state.blobObjectId);
+          await this.walrusClient.executeDeleteBlobTransaction({
+            blobObjectId: state.blobObjectId,
+            signer: this.signer,
+          });
+          console.log('Cleaned up failed blob object');
+        } catch (cleanupError) {
+          console.warn('Could not clean up blob object:', cleanupError);
+        }
+      }
+
+      // Reset to encoding stage and clear problematic data
+      state.stage = 'encoding';
+      state.blobObjectId = undefined;
+      state.metadata = undefined;
+      state.sliversByNode = undefined;
+      state.confirmations = undefined;
+      state.error = undefined;
+
+      await this.stateManager.saveState(state);
+
+      // Restart from encoding
+      console.log('Restarting upload from stage 1...');
+      await this.executeStage(state, fileContent, options);
     }
   }
 
+  /**
+   * Third upload stage: certify upload. In case of failure during this
+   * stage the blobs might be certified but the local state might not be
+   * up-to-date so check if the blob is certified with `isBlobCertified()`.
+   */
   private async stageCertifying(state: UploadState, options: UploadOptions) {
     console.log('Stage 3/3: Certifying blob...');
 
@@ -236,21 +368,70 @@ export class WalrusUploader {
       throw new Error('Missing required state for certification stage');
     }
 
-    // Certify blob
-    await this.walrusClient.executeCertifyBlobTransaction({
-      signer: this.signer,
-      blobId: state.blobId,
-      blobObjectId: state.blobObjectId,
-      confirmations: state.confirmations,
-      deletable: options.deletable || false,
-    });
+    try {
+      // The blob might be certified even though the local state does
+      // not reflect that yet.
+      const isCertified = await this.isBlobCertified(state.blobId);
 
-    // Update state
-    state.stage = 'completed';
+      if (isCertified) {
+        console.log('Blob is already certified! Skipping certification step.');
+        await this.stateManager.removeState(state.blobId);
+        return;
+      }
 
-    console.log(
-      'Blob certified successfully for: ',
-      path.basename(state.filePath),
-    );
+      // Certify blob
+      await this.walrusClient.executeCertifyBlobTransaction({
+        signer: this.signer,
+        blobId: state.blobId,
+        blobObjectId: state.blobObjectId,
+        confirmations: state.confirmations,
+        deletable: options.deletable || false,
+      });
+
+      // Update state
+      state.stage = 'completed';
+      await this.stateManager.saveState(state);
+
+      console.log(
+        'Blob certified successfully for: ',
+        path.basename(state.filePath),
+      );
+
+      await this.stateManager.removeState(state.blobId);
+    } catch (error) {
+      console.error('Error:', error);
+      state.stage = 'failed';
+      await this.stateManager.saveState(state);
+    }
+  }
+
+  /**
+   * Validate if a blob exists and it's stored in Walrus and certified.
+   * Currently the logic is a bit complicated and should be simplified.
+   *
+   * @param blobId the ID of the blob for a file which might be uploaded on Walrus
+   * @returns true if the blob is stored in Walrus and it's certified
+   */
+  async isBlobCertified(blobId: string): Promise<boolean> {
+    try {
+      // check the status if the blob exists
+      const status = await this.walrusClient.getVerifiedBlobStatus({ blobId });
+
+      // if 'permanent' or 'deletable' then check the confirmation epoch else
+      // it's not confirmed
+      if (status.type === 'permanent' || status.type === 'deletable') {
+        return status.initialCertifiedEpoch !== null;
+      }
+      return false;
+    } catch (error) {
+      // if there is no status then check if the blob exists at all, if not
+      // then the blob is definitely not certified
+      try {
+        await this.walrusClient.readBlob({ blobId });
+        return true;
+      } catch (readError) {
+        return false;
+      }
+    }
   }
 }
