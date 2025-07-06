@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import { FileScanner } from './scanner';
 import { WalrusUploader } from './uploader';
+import { StateManager } from './state';
 
 const program = new Command();
 
@@ -22,6 +23,7 @@ program
     'The number of epochs to store the blob(s) for.',
   )
   .option('--deletable', 'Mark the blob as deletable', false)
+  .option('--resume', 'Resume the incomplete uploads from a directory', false)
   .action(async (src: string, options) => {
     const scanner = new FileScanner();
     if (!src || !(await scanner.pathExists(src))) {
@@ -34,9 +36,17 @@ program
 
     let filesList: string[] = [];
 
+    // handle various use cases; we end up with a `filesList` in the end
+    // and we upload all the elements in the list
     if (await scanner.isDirectory(src)) {
-      console.log(`Syncing files from directory: ${src}`);
-      filesList = await scanner.getFilesList(src);
+      if (options.resume) {
+        console.log('Resuming incomplete uploads from:', src);
+        const sm = new StateManager();
+        filesList = await sm.listPendingUploads();
+      } else {
+        console.log(`Syncing files from directory: ${src}`);
+        filesList = await scanner.getFilesList(src);
+      }
     } else {
       console.log(`Syncing file: ${src}`);
       filesList = [path.resolve(src)];

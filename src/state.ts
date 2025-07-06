@@ -86,4 +86,34 @@ export class StateManager {
     const filePath = this.getStateFilePath(blobId);
     await fs.unlink(filePath);
   }
+
+  /**
+   * Get a list of the states for the files that have not been uploaded yet
+   *
+   * @returns list of pending uploads.
+   */
+  async listPendingUploads(): Promise<string[]> {
+    await this.ensureStateDir();
+    try {
+      const files = await fs.readdir(this.stateDir);
+      const incompleteFiles: string[] = [];
+
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          const content = await fs.readFile(
+            path.join(this.stateDir, file),
+            'utf-8',
+          );
+          const state = JSON.parse(content);
+          if (state.stage !== 'completed') {
+            incompleteFiles.push(state.filePath);
+          }
+        }
+      }
+
+      return incompleteFiles;
+    } catch (error) {
+      return [];
+    }
+  }
 }
