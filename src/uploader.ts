@@ -236,7 +236,7 @@ export class WalrusUploader {
     fileContent: Uint8Array,
     options: UploadOptions,
   ) {
-    console.log('Stage 1/3: Encoding and registering blob...');
+    console.log('> Stage 1/3: Encoding and registering blob...');
 
     const encoded = await this.walrusClient.encodeBlob(fileContent);
     const { sliversByNode, metadata, rootHash } = encoded;
@@ -282,7 +282,7 @@ export class WalrusUploader {
     fileContent: Uint8Array,
     options: UploadOptions,
   ) {
-    console.log('Stage 2/3: Uploading to storage nodes...');
+    console.log('> Stage 2/3: Uploading to storage nodes...');
 
     if (!state.metadata || !state.sliversByNode || !state.blobObjectId) {
       throw new Error('Missing required state for uploading stage');
@@ -323,7 +323,7 @@ export class WalrusUploader {
       // Resuming an upload on stage 2 returns and error. Need to investigate
       // further why that happens.
       console.log(
-        'Stage 2 failed, restarting from encoding (will delete Sui object and create new one)',
+        '> Stage 2 failed, restarting from encoding (will delete Sui object and create new one)',
       );
 
       // cleanup
@@ -362,7 +362,7 @@ export class WalrusUploader {
    * up-to-date so check if the blob is certified with `isBlobCertified()`.
    */
   private async stageCertifying(state: UploadState, options: UploadOptions) {
-    console.log('Stage 3/3: Certifying blob...');
+    console.log('> Stage 3/3: Certifying blob...');
 
     if (!state.confirmations || !state.blobObjectId) {
       throw new Error('Missing required state for certification stage');
